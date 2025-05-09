@@ -12,6 +12,7 @@
 (define-constant ERR_DOES_NOT_EXIST (err u102))
 (define-constant ERR_SELF_CITATION (err u103))
 (define-constant ERR_INVALID_PARAMETERS (err u104))
+(define-constant ERR_INVALID_INPUT (err u105))
 
 ;; Data Structures
 
@@ -76,6 +77,34 @@
 (define-map allowed-verifiers
   { verifier: principal }
   { active: bool }
+)
+
+;; Validation functions
+
+;; Validate string-ascii is not empty
+(define-private (validate-string-ascii (input (string-ascii 256)))
+  (> (len input) u0)
+)
+
+;; Validate string-utf8 is not empty (if present)
+(define-private (validate-optional-string-utf8 (input (optional (string-utf8 256))))
+  (match input
+    some-val (> (len some-val) u0)
+    true
+  )
+)
+
+;; Validate work-id
+(define-private (validate-work-id (work-id (string-ascii 64)))
+  (and
+    (> (len work-id) u0)
+    (<= (len work-id) u64)
+  )
+)
+
+;; Validate principal is not null
+(define-private (validate-principal (user principal))
+  (not (is-eq user 'SPNWZ5V2TPWGQGVDR6T7B6RQ4XMGZ4PXTEE0VQ0S))  ;; Check against zero/null address
 )
 
 ;; Initialize functions
@@ -146,10 +175,13 @@
     ((author tx-sender)
      (existing-work (map-get? academic-works { work-id: work-id })))
     (begin
+      ;; Validate inputs
+      (asserts! (validate-work-id work-id) ERR_INVALID_INPUT)
+      (asserts! (validate-string-ascii title) ERR_INVALID_INPUT)
+      (asserts! (validate-string-ascii field) ERR_INVALID_INPUT)
+      (asserts! (> (len abstract) u0) ERR_INVALID_INPUT)
+      
       (asserts! (is-none existing-work) ERR_ALREADY_EXISTS)
-      (asserts! (> (len work-id) u0) ERR_INVALID_PARAMETERS)
-      (asserts! (> (len title) u0) ERR_INVALID_PARAMETERS)
-      (asserts! (> (len field) u0) ERR_INVALID_PARAMETERS)
       
       ;; Initialize or update author stats
       (initialize-author-stats author)
@@ -217,6 +249,11 @@
     ((citing-work-data (map-get? academic-works { work-id: citing-work }))
      (cited-work-data (map-get? academic-works { work-id: cited-work })))
     (begin
+      ;; Validate inputs
+      (asserts! (validate-work-id citing-work) ERR_INVALID_INPUT)
+      (asserts! (validate-work-id cited-work) ERR_INVALID_INPUT)
+      (asserts! (validate-optional-string-utf8 context) ERR_INVALID_INPUT)
+      
       ;; Check if works exist
       (asserts! (is-some citing-work-data) ERR_DOES_NOT_EXIST)
       (asserts! (is-some cited-work-data) ERR_DOES_NOT_EXIST)
@@ -326,6 +363,9 @@
     ((work-data (map-get? academic-works { work-id: work-id }))
      (verifier-data (map-get? allowed-verifiers { verifier: tx-sender })))
     (begin
+      ;; Validate work-id
+      (asserts! (validate-work-id work-id) ERR_INVALID_INPUT)
+      
       (asserts! (is-some work-data) ERR_DOES_NOT_EXIST)
       (asserts! (is-some verifier-data) ERR_NOT_AUTHORIZED)
       (asserts! (get active (unwrap! verifier-data ERR_NOT_AUTHORIZED)) ERR_NOT_AUTHORIZED)
@@ -365,7 +405,23 @@
 ;; Add a verifier (contract owner only)
 (define-public (add-verifier (verifier principal))
   (begin
+    ;; Validate verifier input
+    (asserts! (validate-principal verifier) ERR_INVALID_INPUT)
+    
+    ;; Validate verifier is not tx-sender (avoid self-authorization)
+    (asserts! (not (is-eq verifier tx-sender)) ERR_INVALID_INPUT)
+    
+    ;; Check authorization
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    
+    ;; Check if already exists and active
+    (let ((existing-verifier (map-get? allowed-verifiers { verifier: verifier })))
+      (asserts! (or (is-none existing-verifier) 
+                    (not (get active (default-to { active: false } existing-verifier)))) 
+                ERR_ALREADY_EXISTS)
+    )
+    
+    ;; Add verifier
     (map-set allowed-verifiers
       { verifier: verifier }
       { active: true }
@@ -377,7 +433,19 @@
 ;; Remove a verifier (contract owner only)
 (define-public (remove-verifier (verifier principal))
   (begin
+    ;; Validate verifier input
+    (asserts! (validate-principal verifier) ERR_INVALID_INPUT)
+    
+    ;; Check authorization
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    
+    ;; Validate verifier exists and is active
+    (let ((existing-verifier (map-get? allowed-verifiers { verifier: verifier })))
+      (asserts! (is-some existing-verifier) ERR_DOES_NOT_EXIST)
+      (asserts! (get active (default-to { active: false } existing-verifier)) ERR_DOES_NOT_EXIST)
+    )
+    
+    ;; Deactivate verifier
     (map-set allowed-verifiers
       { verifier: verifier }
       { active: false }
